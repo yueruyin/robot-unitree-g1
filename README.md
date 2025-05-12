@@ -4,7 +4,8 @@
 
 本项目是基于宇树科技（Unitree）G1人形机器人的控制系统实现，使用MuJoCo物理引擎进行仿真。该系统支持G1机器人的全身控制，包括双足行走、蹲起、手臂与手指的精确控制等功能。
 
-![图片](resources%2Fg1%2Fimages%2Fmujoco_g1_53dof.png)
+![01](resources%2Fg1%2Fimages%2F01_mujoco_g1_53dof.png)
+![02](resources%2Fg1%2Fimages%2F02_mujoco_g1_53dof.png)
 
 ## 系统特点
 
