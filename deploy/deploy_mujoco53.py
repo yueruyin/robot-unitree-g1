@@ -11,14 +11,12 @@ import torch
 import math  # 为方向计算添加
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional, Union
-import inspect
-import re
 import os
 
 # 导入RRT算法
 from deploy.rrt.RRT_star import RRTStar3D, Node3D
 
-from legged_gym import LEGGED_GYM_ROOT_DIR
+dir_root = os.path.dirname(os.path.abspath(__file__)).replace("deploy", '')
 
 # 全局变量，用于走路控制
 cmd = [0, 0, 0]  # 行走命令 [前进速度, 侧向速度, 转向速度]
@@ -104,7 +102,6 @@ class ArmConfig:
         instance.default_angles = np.array(config["default_angles"], dtype=np.float32)
         instance.simulation_dt = config["simulation_dt"]
         instance.control_decimation = config["control_decimation"]
-        instance.motion_path = config["motion_path"]
         instance.policy_path = config["policy_path"]
 
         # 加载命令缩放参数
@@ -1443,7 +1440,7 @@ class SquatController:
             self.action_scale = 0.25
 
         # 尝试加载策略网络
-        policy_path = config.policy_path.replace("{LEGGED_GYM_ROOT_DIR}", LEGGED_GYM_ROOT_DIR)
+        policy_path = config.policy_path.replace("{LEGGED_GYM_ROOT_DIR}", dir_root)
         try:
             self.policy = torch.jit.load(policy_path)
             print(f"成功加载策略网络: {policy_path}")
@@ -1923,7 +1920,7 @@ def main():
     args = parser.parse_args()
 
     # 加载配置文件
-    config_path = f"{LEGGED_GYM_ROOT_DIR}/deploy/deploy_mujoco/configs/{args.config_file}"
+    config_path = f"{dir_root}/deploy/config/{args.config_file}"
     config = ArmConfig.from_yaml(config_path)
 
     # 打印工作空间限制
@@ -1934,7 +1931,7 @@ def main():
 
     with open(config_path, "r") as f:
         yaml_config = yaml.load(f, Loader=yaml.FullLoader)
-        xml_path = yaml_config["xml_path"].replace("{LEGGED_GYM_ROOT_DIR}", LEGGED_GYM_ROOT_DIR)
+        xml_path = yaml_config["xml_path"].replace("{LEGGED_GYM_ROOT_DIR}", dir_root)
 
     # 加载机器人模型
     model = mujoco.MjModel.from_xml_path(xml_path)
