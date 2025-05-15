@@ -15,6 +15,9 @@ import inspect
 import re
 import os
 
+# 导入RRT算法
+from deploy.rrt.RRT_star import RRTStar3D, Node3D
+
 from legged_gym import LEGGED_GYM_ROOT_DIR
 
 # 全局变量，用于走路控制
@@ -22,6 +25,9 @@ cmd = [0, 0, 0]  # 行走命令 [前进速度, 侧向速度, 转向速度]
 xy = [0, 0]  # 目标位置 [x, y]
 switch = False  # 是否激活行走模式
 
+# 实际应用中可以从场景中提取障碍物信息 障碍物格式：(x, y, z, 半径)
+obstacles = [(1.20, -1.65, 0.87, 0.024, 0.024, 0.090)]
+# obstacles = []
 
 @dataclass
 class ArmConfig:
@@ -268,6 +274,11 @@ class ArmBaseController:
         # 添加手腕roll关节平滑过渡的定时器
         self.wrist_roll_timer = None
 
+        # 添加RRT路径规划相关变量
+        self.rrt_path = []  # 存储RRT规划的路径
+        self.current_path_index = 0  # 当前执行到的路径点索引
+        self.path_executing = False  # 是否正在执行路径
+
         self.arm_joint_names = [
             f'{arm_side}_shoulder_pitch_joint',
             f'{arm_side}_shoulder_roll_joint',
@@ -317,7 +328,7 @@ class ArmBaseController:
 
     def set_target_position(self, position: np.ndarray) -> bool:
         """
-        设置末端执行器的目标位置
+        设置末端执行器的目标位置，使用RRT*算法进行路径规划
 
         参数:
             position: 目标位置坐标 [x, y, z]
@@ -325,12 +336,71 @@ class ArmBaseController:
         返回:
             bool: 位置是否有效
         """
-        if self._check_position_limits(position):
+        if not self._check_position_limits(position):
+            return False
+
+        # 获取当前末端位置作为起点
+        current_pos = self.data.xpos[self.end_effector_id].copy()
+
+        # 设置工作空间边界
+        limits = self.config.workspace_limits
+        bounds = (
+            limits['x'][0], limits['x'][1],  # x边界
+            limits['y'][0], limits['y'][1],  # y边界
+            limits['z'][0], limits['z'][1]  # z边界
+        )
+
+        # 执行RRT*路径规划
+        try:
+            rrt = RRTStar3D(
+                start=tuple(current_pos),
+                goal=tuple(position),
+                obstacles=obstacles,
+                bounds=bounds,
+                step_size=0.001,  # 较小的步长以获得更平滑的路径
+                max_iter=3000,
+                search_radius=0.005
+            )
+
+            path = rrt.plan()
+            
+
+            if path:
+                print(f"RRT规划成功，路径点数量: {len(path)}")
+                # 清空现有路径和队列
+                self.rrt_path = path
+                self.current_path_index = 0
+                self.path_executing = True
+
+                # 清空现有队列，只保留第一个路径点
+                while not self.target_position_queue.empty():
+                    try:
+                        self.target_position_queue.get_nowait()
+                    except queue.Empty:
+                        break
+
+                # 放入第一个路径点
+                if len(path) > 0:
+                    first_point = np.array(path[0])
+                    self.target_position_queue.put(first_point)
+                    self.last_target_pos = position.copy()  # 最终目标位置
+                    self.has_user_input = True
+                    return True
+            else:
+                print("RRT规划失败，使用直线路径")
+                # 规划失败则使用直线路径
+                self.target_position_queue.put(position)
+                self.last_target_pos = position.copy()
+                self.has_user_input = True
+                return True
+
+        except Exception as e:
+            print(f"RRT路径规划出错: {e}")
+            # 规划出错则使用直线路径
             self.target_position_queue.put(position)
             self.last_target_pos = position.copy()
             self.has_user_input = True
             return True
-        return False
 
     def _check_position_limits(self, pos: np.ndarray) -> bool:
         """
@@ -549,6 +619,16 @@ class ArmBaseController:
         # 计算位置误差
         pos_error = self.last_target_pos - current_pos
 
+        # 检查当前目标点是否已经到达
+        error_norm = np.linalg.norm(pos_error)
+        if error_norm < 0.05 and self.path_executing and self.current_path_index < len(self.rrt_path) - 1:
+            # 到达当前路径点，转到下一个路径点
+            self.current_path_index += 1
+            next_point = np.array(self.rrt_path[self.current_path_index])
+            self.target_position_queue.put(next_point)
+            print(f"到达路径点 {self.current_path_index}/{len(self.rrt_path)}, 下一点: {next_point}")
+            return
+
         # 坐标变换：将误差转换到机器人基座坐标系
         base_id = self.model.body('pelvis').id
         base_quat = self.data.xquat[base_id]
@@ -567,7 +647,6 @@ class ArmBaseController:
         pos_error = R.T @ pos_error
 
         # 根据误差大小动态调整步长
-        error_norm = np.linalg.norm(pos_error)
         scale = min(0.5, max(0.1, error_norm))
         pos_error *= scale
 
@@ -1749,7 +1828,7 @@ class InputThread(threading.Thread):
                     positions = list(map(float, parts[1:4]))
                     target_pos = np.array(positions)
                     if self.left_controller.set_target_position(target_pos):
-                        print(f"已设置左臂目标位置为: {target_pos}")
+                        print(f"已设置左臂目标位置为: {target_pos}，使用RRT进行路径规划")
                     else:
                         print("目标位置超出工作空间范围")
 
@@ -1757,7 +1836,7 @@ class InputThread(threading.Thread):
                     positions = list(map(float, parts[1:4]))
                     target_pos = np.array(positions)
                     if self.right_controller.set_target_position(target_pos):
-                        print(f"已设置右臂目标位置为: {target_pos}")
+                        print(f"已设置右臂目标位置为: {target_pos}，使用RRT进行路径规划")
                     else:
                         print("目标位置超出工作空间范围")
 
@@ -2032,8 +2111,8 @@ def main():
 
 if __name__ == "__main__":
     main()
-    # print(np.random.rand(8).reshape((3,3)))
-    # print(np.empty((3,3)))
-    # a = np.array([1,2])
-    # b = np.array([3,4])
-    # print(a@b)
+    # a = np.array([1, 2])
+    # b = np.array([3, 4])
+    # print(np.dot(a, b))
+    # print(math.sqrt(16))
+    # print(4 ** 2)
