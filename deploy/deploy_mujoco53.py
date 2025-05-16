@@ -275,6 +275,10 @@ class ArmBaseController:
         self.rrt_path = []  # 存储RRT规划的路径
         self.current_path_index = 0  # 当前执行到的路径点索引
         self.path_executing = False  # 是否正在执行路径
+        
+        # 添加路径可视化相关变量
+        self.path_sites = []  # 存储路径点的site引用
+        self.sites_added = False  # 标记是否已添加site到模型
 
         self.arm_joint_names = [
             f'{arm_side}_shoulder_pitch_joint',
@@ -382,6 +386,10 @@ class ArmBaseController:
                     self.target_position_queue.put(first_point)
                     self.last_target_pos = position.copy()  # 最终目标位置
                     self.has_user_input = True
+                    
+                    # 可视化路径
+                    self.visualize_path(path)
+                    
                     return True
             else:
                 print("RRT规划失败，使用直线路径")
@@ -398,6 +406,96 @@ class ArmBaseController:
             self.last_target_pos = position.copy()
             self.has_user_input = True
             return True
+            
+    def visualize_path(self, path):
+        """
+        使用site对象可视化RRT路径
+        
+        参数:
+            path: RRT规划的路径点列表
+        """
+        # 清除之前的可视化路径点
+        self.clear_path_visualization()
+        
+        # 创建新的site进行路径可视化
+        self.path_sites = []
+        
+        # 使用viewer.user_scn添加自定义geoms
+        for i, point in enumerate(path):
+            # 添加一个标记为路径点的site
+            site_name = f"{self.arm_side}_path_site_{i}"
+            site_rgb = [0.0, 0.8, 0.2] if i < len(path) - 1 else [1.0, 0.0, 0.0]  # 终点为红色，其他点为绿色
+            site_size = 0.01 if i < len(path) - 1 else 0.015  # 终点大一点
+            
+            # 将site信息保存，以便在渲染时添加到场景中
+            self.path_sites.append({
+                'name': site_name,
+                'pos': point,
+                'size': site_size,
+                'rgba': site_rgb + [0.7]  # 添加alpha通道
+            })
+        
+        # 标记需要添加sites到模型
+        self.sites_added = True
+        
+    def clear_path_visualization(self):
+        """清除路径可视化"""
+        self.path_sites = []
+        self.sites_added = False
+        
+    def add_path_sites_to_scene(self, scn):
+        """
+        将路径点添加到场景中进行可视化
+        
+        参数:
+            scn: mjvScene对象
+        """
+        if not self.sites_added or not self.path_sites:
+            return
+            
+        # 为每个路径点添加一个geom到场景
+        for i, site_info in enumerate(self.path_sites):
+            if scn.ngeom < scn.maxgeom:  # 检查是否还有空间添加geom
+                g = scn.geoms[scn.ngeom]
+                # 设置为球体
+                mujoco.mjv_initGeom(
+                    g, 
+                    mujoco.mjtGeom.mjGEOM_SPHERE, 
+                    np.array([site_info['size'], 0, 0]), 
+                    np.array(site_info['pos']), 
+                    np.eye(3).flatten(), 
+                    np.array(site_info['rgba'])
+                )
+                scn.ngeom += 1
+                
+        # 为相邻路径点之间添加连接线
+        for i in range(len(self.path_sites) - 1):
+            if scn.ngeom < scn.maxgeom:  # 检查是否还有空间添加geom
+                start_pos = np.array(self.path_sites[i]['pos'])
+                end_pos = np.array(self.path_sites[i+1]['pos'])
+                
+                # 添加连接线
+                g = scn.geoms[scn.ngeom]
+                # 初始化为胶囊体形状
+                mujoco.mjv_initGeom(
+                    g,
+                    mujoco.mjtGeom.mjGEOM_CAPSULE, 
+                    np.array([0.003, 0, 0]),  # 线的半径
+                    np.zeros(3),    # 初始位置将被connector函数更新
+                    np.eye(3).flatten(),      # 旋转矩阵(默认)
+                    np.array([0.0, 0.8, 0.8, 0.7])  # 青色，半透明
+                )
+                
+                # 使用正确的参数格式调用connector函数
+                mujoco.mjv_connector(
+                    g, 
+                    mujoco.mjtGeom.mjGEOM_CAPSULE, 
+                    0.003,  # 宽度
+                    start_pos,  # 起点
+                    end_pos     # 终点
+                )
+                
+                scn.ngeom += 1
 
     def _check_position_limits(self, pos: np.ndarray) -> bool:
         """
@@ -2089,6 +2187,18 @@ def main():
                     if squat_controller.is_squatting:
                         print(f"\n下蹲状态: {squat_controller.squat_phase:.2f}")
 
+                # 更新可视化 - 使用viewer.user_scn添加自定义geom以显示路径
+                with viewer.lock():
+                    # 在每帧清除user_scn中的自定义几何体
+                    viewer.user_scn.ngeom = 0
+                    
+                    # 添加路径可视化到场景
+                    if right_controller.arm_controller.sites_added:
+                        right_controller.arm_controller.add_path_sites_to_scene(viewer.user_scn)
+                    
+                    if left_controller.arm_controller.sites_added:
+                        left_controller.arm_controller.add_path_sites_to_scene(viewer.user_scn)
+                
                 # 更新可视化
                 viewer.sync()
 
@@ -2108,8 +2218,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    # a = np.array([1, 2])
-    # b = np.array([3, 4])
-    # print(np.dot(a, b))
-    # print(math.sqrt(16))
-    # print(4 ** 2)
