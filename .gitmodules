@@ -1,0 +1,3 @@
+[submodule "OpenHomie"]
+	path = OpenHomie
+	url = https://github.com/InternRobotics/OpenHomie
